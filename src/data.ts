@@ -59,6 +59,8 @@ const project: ChecklistProject = {
   reviewNote: '',
   stages: structuredClone(stages),
   items: structuredClone(items),
+  sourceRevisionId: 'revision-2',
+  revisionReason: '补充增压检查项，并修正起飞构型襟翼回应，准备下次训练发布。',
   revisions: [
     {
       id: 'revision-2',
@@ -82,7 +84,7 @@ const project: ChecklistProject = {
 };
 
 export const createInitialState = (): WorkspaceState => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   selectedProjectId: project.id,
   projects: [project]
 });

@@ -21,9 +21,9 @@ import {
   Theme,
   Tooltip
 } from '@radix-ui/themes';
-import { buildVersionOptions, diffVersions } from './diff';
+import { buildVersionOptions, checkRestoreEligibility, diffVersions, findRevision, frozenRevisions, latestFrozenRevision } from './diff';
 import { useChecklistStore } from './store';
-import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
 
 const statusMeta: Record<WorkflowStatus, { label: string; color: 'gray' | 'amber' | 'green'; description: string }> = {
@@ -42,6 +42,21 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
 
+/** 修订溯源信息：基于哪个冻结版本创建、何时冻结、变更原因。 */
+function revisionProvenance(
+  project: Pick<ChecklistProject, 'sourceRevisionId' | 'revisionReason'>,
+  revisions: ChecklistRevision[]
+): { source: ChecklistRevision; reason: string } | undefined {
+  if (!project.sourceRevisionId) return undefined;
+  const source = revisions.find((revision) => revision.id === project.sourceRevisionId);
+  if (!source) return undefined;
+  return { source, reason: project.revisionReason?.trim() ?? '' };
+}
+
+function frozenDate(value: string): string {
+  return new Date(value).toLocaleDateString('zh-CN');
+}
+
 function App() {
   const store = useChecklistStore();
   const project = store.selectedProject;
@@ -58,6 +73,9 @@ function App() {
   const [freezeNote, setFreezeNote] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
+  const [restoreSourceId, setRestoreSourceId] = useState<string>(() => latestFrozenRevision(project)?.id ?? '');
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreReason, setRestoreReason] = useState('');
   const [savePulse, setSavePulse] = useState(false);
   const challengeRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -68,6 +86,16 @@ function App() {
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
+  const frozenOptions = useMemo(() => frozenRevisions(project), [project]);
+  const latestFrozen = useMemo(() => latestFrozenRevision(project), [project]);
+  const restoreSource = useMemo(() => findRevision(project, restoreSourceId), [project, restoreSourceId]);
+  const provenance = useMemo(() => revisionProvenance(project, project.revisions), [project]);
+
+  /** “从所选冻结版本创建修订”的准入判断：仅当前草稿可基于最新冻结版本恢复。 */
+  const restoreBlocked = useMemo<{ reason: string; hint?: string } | null>(() => {
+    const eligibility = checkRestoreEligibility(project, restoreSourceId);
+    return eligibility.ok ? null : { reason: eligibility.reason, hint: eligibility.hint };
+  }, [project, restoreSourceId]);
   const filteredStages = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('zh-CN');
     return project.stages
@@ -88,7 +116,10 @@ function App() {
     if (!project.stages.some((stage) => stage.id === quickStageId)) setQuickStageId(project.stages[0]?.id ?? '');
     if (!versionOptions.some((option) => option.id === leftVersion)) setLeftVersion('current');
     if (!versionOptions.some((option) => option.id === rightVersion)) setRightVersion(versionOptions[1]?.id ?? '');
-  }, [project.id, project.items, project.stages, project.revision, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion]);
+    if (restoreSourceId && !project.revisions.some((revision) => revision.id === restoreSourceId)) {
+      setRestoreSourceId(latestFrozenRevision(project)?.id ?? '');
+    }
+  }, [project.id, project.items, project.stages, project.revision, project.revisions, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion, restoreSourceId]);
 
   useEffect(() => {
     localStorage.setItem('sologsb-1030-theme', appearance);
@@ -155,6 +186,18 @@ function App() {
     if (issue.stageId) setQuickStageId(issue.stageId);
   }
 
+  function confirmRestore() {
+    if (!restoreSource || restoreBlocked || !restoreReason.trim()) return;
+    const allowed = store.restoreFromRevision(restoreSource.id, restoreReason);
+    if (!allowed) return;
+    setRestoreOpen(false);
+    setRestoreReason('');
+    // 恢复后立即回到编辑器，并让差异默认对比“新当前草稿 → 来源冻结版本”。
+    setActiveTab('editor');
+    setLeftVersion('current');
+    setRightVersion(restoreSource.id);
+  }
+
   function exportPrintableHtml() {
     const stageOrder = project.stages.slice().sort((a, b) => a.order - b.order);
     const body = stageOrder.map((stage) => {
@@ -163,12 +206,16 @@ function App() {
       `).join('');
       return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
+    const exportProvenance = revisionProvenance(project, project.revisions);
+    const provenanceLine = exportProvenance
+      ? `<div class="provenance">修订来源：基于 r${exportProvenance.source.revision}（${escapeHtml(frozenDate(exportProvenance.source.createdAt))} 冻结）创建${exportProvenance.reason ? ` · 变更原因：${escapeHtml(exportProvenance.reason)}` : ''}</div>`
+      : '';
     const documentHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title><style>
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
-      h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
+      h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} .provenance{margin:6px 0 0;padding:6px 10px;border-left:3px solid #222;background:#f2f2f2;color:#222} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
       @media print{body{margin:15mm}section{break-inside:avoid}}
-    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
+    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}${provenanceLine}</div>${body}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -286,6 +333,7 @@ function App() {
                     <Badge color={project.status === 'draft' ? 'gray' : project.status === 'review' ? 'amber' : 'green'}>{statusMeta[project.status].label}</Badge>
                   </div>
                   {project.status !== 'draft' && <Callout.Root color={project.status === 'review' ? 'amber' : 'green'} mb="4"><Callout.Text>{statusMeta[project.status].description} 当前内容不能直接编辑。</Callout.Text></Callout.Root>}
+                  {provenance && <Callout.Root color="blue" mb="4"><Callout.Text>本修订基于冻结版本 r{provenance.source.revision}（{frozenDate(provenance.source.createdAt)} 冻结）创建{provenance.reason ? `；变更原因：${provenance.reason}` : ''}。当前草稿完全恢复自该快照，未混入其他版本内容。</Callout.Text></Callout.Root>}
 
                   <div className="quick-entry">
                     <Select.Root value={quickStageId || undefined} onValueChange={setQuickStageId} disabled={project.status !== 'draft'}>
@@ -418,6 +466,39 @@ function App() {
                   <span className="version-arrow">→</span>
                   <label><span>比较版本</span><Select.Root value={rightVersion} onValueChange={setRightVersion}><Select.Trigger variant="soft" /><Select.Content position="popper">{versionOptions.map((option) => <Select.Item key={option.id} value={option.id}>{option.label}</Select.Item>)}</Select.Content></Select.Root></label>
                 </div>
+
+                <Card className="restore-panel">
+                  <Flex justify="between" align="center" gap="4" wrap="wrap">
+                    <div className="restore-copy">
+                      <Heading size="4">从所选冻结版本创建修订</Heading>
+                      <Text size="2" color="gray" as="p">恢复所选版本当时的阶段、检查项、顺序与前置条件；当前草稿会被整体替换，不会混入新快照。创建时需记录来源版本与变更原因。</Text>
+                    </div>
+                    <Flex gap="3" align="end" wrap="wrap">
+                      <label><span>来源冻结版本</span>
+                        <Select.Root value={restoreSourceId || undefined} onValueChange={setRestoreSourceId} disabled={frozenOptions.length === 0}>
+                          <Select.Trigger variant="soft" style={{ minWidth: 260 }} />
+                          <Select.Content position="popper">
+                            {frozenOptions.map((revision) => (
+                              <Select.Item key={revision.id} value={revision.id}>
+                                r{revision.revision} · {frozenDate(revision.createdAt)} 冻结{latestFrozen?.id !== revision.id ? '（已有后续修订）' : ''}
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Root>
+                      </label>
+                      <Tooltip content={restoreBlocked?.reason ?? '恢复所选冻结版本并填写变更原因'}>
+                        <Button color="blue" disabled={restoreBlocked !== null || !restoreSource} onClick={() => { setRestoreReason(''); setRestoreOpen(true); }}>从该版本创建修订</Button>
+                      </Tooltip>
+                    </Flex>
+                  </Flex>
+                  {restoreBlocked && <Callout.Root color="amber" mt="3"><Callout.Text>{restoreBlocked.reason}{restoreBlocked.hint ? ` ${restoreBlocked.hint}` : ''}</Callout.Text></Callout.Root>}
+                  {!restoreBlocked && restoreSource && (
+                    <Text size="1" color="gray" as="p" mt="3">
+                      将创建 r{project.revision + 1} 编辑中版本，内容完全复制自 r{restoreSource.revision}（{restoreSource.items.length} 个检查项 · {restoreSource.stages.length} 个阶段）。
+                    </Text>
+                  )}
+                </Card>
+
                 <div className="diff-list">
                   {diffEntries.length ? diffEntries.map((entry) => (
                     <Card key={`${entry.type}-${entry.key}`} className="diff-card">
@@ -463,6 +544,28 @@ function App() {
         </Dialog.Content>
       </Dialog.Root>
 
+      <Dialog.Root open={restoreOpen} onOpenChange={setRestoreOpen}>
+        <Dialog.Content maxWidth="560px">
+          <Dialog.Title>从冻结版本 r{restoreSource?.revision ?? ''} 创建修订 r{project.revision + 1}</Dialog.Title>
+          <Dialog.Description size="2" color="gray">新版本将恢复 r{restoreSource?.revision ?? ''} 冻结当时的阶段、检查项、顺序与前置条件；当前草稿内容会被整体替换，且不会混入该版本之后的任何改动。</Dialog.Description>
+          {restoreSource && (
+            <Callout.Root color="blue" mt="4">
+              <Callout.Text size="2">
+                来源版本：r{restoreSource.revision} · {frozenDate(restoreSource.createdAt)} 冻结 · 复核说明：{restoreSource.note}
+              </Callout.Text>
+            </Callout.Root>
+          )}
+          <label className="restore-reason">
+            <span>变更原因（必填）</span>
+            <TextArea value={restoreReason} onChange={(event) => setRestoreReason(event.target.value)} placeholder="说明为何基于该冻结版本继续修订，例如回退某项程序调整。" />
+          </label>
+          <Flex gap="3" justify="end" mt="4">
+            <Dialog.Close><Button variant="soft">取消</Button></Dialog.Close>
+            <Button color="blue" disabled={!restoreReason.trim()} onClick={confirmRestore}>创建修订并恢复内容</Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
       <Dialog.Root open={showHelp} onOpenChange={setShowHelp}>
         <Dialog.Content maxWidth="560px">
           <Dialog.Title>键盘快速操作</Dialog.Title>
@@ -484,9 +587,22 @@ function App() {
 
 function PrintableChecklist({ project, compact = false }: { project: ChecklistProject; compact?: boolean }) {
   const stages = project.stages.slice().sort((a, b) => a.order - b.order);
+  const printProvenance = revisionProvenance(project, project.revisions);
   return (
     <article className={`print-sheet ${compact ? 'compact' : ''}`}>
-      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge></header>
+      <header>
+        <div>
+          <Heading size="7">{project.name}</Heading>
+          <Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text>
+          {printProvenance && (
+            <p className="print-provenance">
+              修订来源：基于冻结版本 r{printProvenance.source.revision}（{frozenDate(printProvenance.source.createdAt)} 冻结）创建
+              {printProvenance.reason ? ` · 变更原因：${printProvenance.reason}` : ''}
+            </p>
+          )}
+        </div>
+        <Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge>
+      </header>
       {stages.map((stage, index) => (
         <section key={stage.id}>
           <div className="print-stage-title"><span>{String(index + 1).padStart(2, '0')}</span><div><Heading size="5">{stage.name}</Heading><Text color="gray" size="1">{stage.description}</Text></div></div>

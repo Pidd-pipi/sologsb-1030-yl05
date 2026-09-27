@@ -29,6 +29,10 @@ export interface ChecklistRevision {
   note: string;
   stages: FlightStage[];
   items: ChecklistItem[];
+  /** 当该版本是从更早的冻结版本恢复创建时，记录来源冻结快照 ID。 */
+  sourceRevisionId?: string;
+  /** 基于历史冻结版本继续修订时填写的变更原因。 */
+  revisionReason?: string;
 }
 
 export interface ChecklistProject {
@@ -42,10 +46,13 @@ export interface ChecklistProject {
   stages: FlightStage[];
   items: ChecklistItem[];
   revisions: ChecklistRevision[];
+  /** 当前草稿所基于的冻结快照 ID；仅“从冻结版本创建修订”时写入。 */
+  sourceRevisionId?: string;
+  revisionReason?: string;
 }
 
 export interface WorkspaceState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   selectedProjectId: string;
   projects: ChecklistProject[];
 }

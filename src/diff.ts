@@ -1,5 +1,51 @@
 import type { ChecklistItem, ChecklistProject, ChecklistRevision, DiffEntry, VersionOption } from './types';
 
+/** 冻结快照按修订号倒序排列（不依赖数组顺序）。 */
+export function frozenRevisions(project: ChecklistProject): ChecklistRevision[] {
+  return project.revisions.filter((revision) => revision.status === 'frozen').sort((a, b) => b.revision - a.revision);
+}
+
+export function latestFrozenRevision(project: ChecklistProject): ChecklistRevision | undefined {
+  return frozenRevisions(project)[0];
+}
+
+export function findRevision(project: ChecklistProject, revisionId: string): ChecklistRevision | undefined {
+  return project.revisions.find((revision) => revision.id === revisionId);
+}
+
+export type RestoreEligibility =
+  | { ok: true; source: ChecklistRevision }
+  | { ok: false; reason: string; hint?: string };
+
+/**
+ * “从冻结版本创建修订”准入规则：
+ * 仅编辑中草稿、且所选快照为最新冻结版本时允许；旧快照被阻止并指出最新版本。
+ */
+export function checkRestoreEligibility(project: ChecklistProject, sourceId: string): RestoreEligibility {
+  const latest = latestFrozenRevision(project);
+  if (project.status === 'frozen' && latest) {
+    return { ok: false, reason: `当前 r${project.revision} 已是冻结状态，请使用“创建修订 r${project.revision + 1}”继续修改。` };
+  }
+  if (project.status === 'review') {
+    return { ok: false, reason: '当前版本正在复核中，复核结束后才能创建新修订。' };
+  }
+  if (!latest) {
+    return { ok: false, reason: '还没有冻结版本，可直接在当前草稿上继续编辑。' };
+  }
+  const source = project.revisions.find((revision) => revision.id === sourceId);
+  if (!source || source.status !== 'frozen') {
+    return { ok: false, reason: '请先选择一个冻结版本作为修订来源。' };
+  }
+  if (source.id !== latest.id) {
+    return {
+      ok: false,
+      reason: `r${source.revision} 后面已经有修订（最新冻结版本为 r${latest.revision}），不能从该版本创建修订。`,
+      hint: '请选择最新冻结版本，以避免把后续改动带回新版本。'
+    };
+  }
+  return { ok: true, source };
+}
+
 const itemLabel = (item: ChecklistItem) => `${item.challenge || '未命名'} → ${item.response || '未填写'}`;
 
 export function buildVersionOptions(project: ChecklistProject): VersionOption[] {

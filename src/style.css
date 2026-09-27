@@ -93,6 +93,14 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .content-page > p.rt-Text { margin: 5px 0 20px; }
 .version-controls { display: grid; grid-template-columns: minmax(230px, 1fr) 40px minmax(230px, 1fr); gap: 14px; align-items: end; max-width: 720px; margin: 16px 0 22px; }
 .version-arrow { text-align: center; font-size: 24px; color: var(--gray-9); padding-bottom: 5px; }
+.restore-panel { margin: 0 0 18px; padding: 15px 17px; border-color: var(--accent-a6); background: var(--accent-a2); }
+.restore-copy { max-width: 560px; }
+.restore-copy p.rt-Text { margin: 4px 0 0; }
+.restore-panel label { display: grid; gap: 6px; }
+.restore-panel label > span { font-size: 12px; font-weight: 700; }
+.restore-reason { display: grid; gap: 6px; margin-top: 14px; }
+.restore-reason > span { font-size: 12px; font-weight: 700; }
+.print-provenance { margin: 6px 0 0; padding: 6px 10px; border-left: 3px solid var(--accent-9); background: var(--accent-a3); color: var(--gray-12); font-size: 11px; line-height: 1.5; }
 .diff-list { display: grid; gap: 10px; }
 .diff-card { overflow: hidden; }
 .diff-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
