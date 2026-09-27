@@ -7,12 +7,24 @@ const clone = <T>(value: T): T => structuredClone(value);
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const now = () => new Date().toISOString();
 
+export function migrateWorkspace(parsed: { schemaVersion?: number; selectedProjectId?: string; projects?: ChecklistProject[] }): WorkspaceState | null {
+  if (!parsed?.projects?.length) return null;
+  if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) return null;
+  return {
+    ...parsed,
+    schemaVersion: 2,
+    selectedProjectId: parsed.selectedProjectId ?? parsed.projects[0].id,
+    // v1 → v2：补充修订来源字段，既有项目与冻结快照原样保留。
+    projects: parsed.projects.map((project) => ({ ...project, revisionSource: project.revisionSource ?? null }))
+  };
+}
+
 function loadState(): WorkspaceState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      const parsed = JSON.parse(saved) as WorkspaceState;
-      if (parsed.schemaVersion === 1 && parsed.projects?.length) return parsed;
+      const migrated = migrateWorkspace(JSON.parse(saved) as WorkspaceState);
+      if (migrated) return migrated;
     }
   } catch {
     // Corrupted local draft falls back to the bundled operational checklist.
@@ -83,7 +95,8 @@ export function useChecklistStore() {
         reviewNote: '',
         stages: [{ id: uid('stage'), name: '飞行前检查', order: 0, description: '说明本阶段目标。' }],
         items: [],
-        revisions: []
+        revisions: [],
+        revisionSource: null
       });
       next.selectedProjectId = id;
       return next;
@@ -199,7 +212,8 @@ export function useChecklistStore() {
         createdAt: now(),
         note: note.trim() || '复核通过并冻结',
         stages: clone(project.stages),
-        items: clone(project.items)
+        items: clone(project.items),
+        source: project.revisionSource ? clone(project.revisionSource) : null
       };
       project.revisions.unshift(snapshot);
       project.status = 'frozen';
@@ -212,7 +226,29 @@ export function useChecklistStore() {
       project.revision += 1;
       project.status = 'draft';
       project.reviewNote = '';
+      project.revisionSource = null;
       project.updatedAt = now();
+    });
+  }, [directUpdate]);
+
+  const createRevisionFrom = useCallback((revisionId: string, reason: string) => {
+    directUpdate((project) => {
+      const source = project.revisions.find((entry) => entry.id === revisionId);
+      if (!source) return;
+      const latestFrozen = project.revisions.reduce((max, entry) => Math.max(max, entry.revision), 0);
+      if (source.revision < latestFrozen) return; // 已有更新的冻结版本，禁止从旧快照分叉
+      project.revision += 1;
+      project.status = 'draft';
+      project.reviewNote = '';
+      // 整体恢复快照内容，当前草稿不混入新修订。
+      project.stages = clone(source.stages);
+      project.items = clone(source.items);
+      project.revisionSource = {
+        revisionId: source.id,
+        revision: source.revision,
+        reason: reason.trim(),
+        restoredAt: now()
+      };
     });
   }, [directUpdate]);
 
@@ -261,6 +297,7 @@ export function useChecklistStore() {
     submitForReview,
     freezeRevision,
     createRevision,
+    createRevisionFrom,
     undo,
     redo,
     saveNow

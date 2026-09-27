@@ -21,6 +21,13 @@ export interface ChecklistItem {
   updatedAt: string;
 }
 
+export interface RevisionSource {
+  revisionId: string;
+  revision: number;
+  reason: string;
+  restoredAt: string;
+}
+
 export interface ChecklistRevision {
   id: string;
   revision: number;
@@ -29,6 +36,7 @@ export interface ChecklistRevision {
   note: string;
   stages: FlightStage[];
   items: ChecklistItem[];
+  source?: RevisionSource | null;
 }
 
 export interface ChecklistProject {
@@ -42,10 +50,11 @@ export interface ChecklistProject {
   stages: FlightStage[];
   items: ChecklistItem[];
   revisions: ChecklistRevision[];
+  revisionSource: RevisionSource | null;
 }
 
 export interface WorkspaceState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   selectedProjectId: string;
   projects: ChecklistProject[];
 }

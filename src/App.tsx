@@ -58,6 +58,9 @@ function App() {
   const [freezeNote, setFreezeNote] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
+  const [restoreId, setRestoreId] = useState(project.revisions[0]?.id ?? '');
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreReason, setRestoreReason] = useState('');
   const [savePulse, setSavePulse] = useState(false);
   const challengeRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -68,6 +71,9 @@ function App() {
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
+  const restoreTarget = project.revisions.find((revision) => revision.id === restoreId);
+  const latestFrozenRevision = project.revisions.reduce((max, revision) => Math.max(max, revision.revision), 0);
+  const restoreBlocked = !!restoreTarget && restoreTarget.revision < latestFrozenRevision;
   const filteredStages = useMemo(() => {
     const query = search.trim().toLocaleLowerCase('zh-CN');
     return project.stages
@@ -88,7 +94,8 @@ function App() {
     if (!project.stages.some((stage) => stage.id === quickStageId)) setQuickStageId(project.stages[0]?.id ?? '');
     if (!versionOptions.some((option) => option.id === leftVersion)) setLeftVersion('current');
     if (!versionOptions.some((option) => option.id === rightVersion)) setRightVersion(versionOptions[1]?.id ?? '');
-  }, [project.id, project.items, project.stages, project.revision, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion]);
+    if (!project.revisions.some((revision) => revision.id === restoreId)) setRestoreId(project.revisions[0]?.id ?? '');
+  }, [project.id, project.items, project.stages, project.revision, project.revisions, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion, restoreId]);
 
   useEffect(() => {
     localStorage.setItem('sologsb-1030-theme', appearance);
@@ -155,6 +162,14 @@ function App() {
     if (issue.stageId) setQuickStageId(issue.stageId);
   }
 
+  function confirmRestore() {
+    if (!restoreTarget || restoreBlocked || !restoreReason.trim()) return;
+    store.createRevisionFrom(restoreTarget.id, restoreReason);
+    setRestoreOpen(false);
+    setRestoreReason('');
+    setActiveTab('editor');
+  }
+
   function exportPrintableHtml() {
     const stageOrder = project.stages.slice().sort((a, b) => a.order - b.order);
     const body = stageOrder.map((stage) => {
@@ -163,12 +178,15 @@ function App() {
       `).join('');
       return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
+    const sourceLine = project.revisionSource
+      ? `<div class="meta source">修订来源：基于冻结版本 r${project.revisionSource.revision} 恢复（${new Date(project.revisionSource.restoredAt).toLocaleString('zh-CN')}） · 变更原因：${escapeHtml(project.revisionSource.reason)}</div>`
+      : '';
     const documentHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title><style>
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
-      h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
+      h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} .meta.source{margin:-22px 0 28px;color:#1d4ed8} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
       @media print{body{margin:15mm}section{break-inside:avoid}}
-    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
+    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${sourceLine}${body}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -234,6 +252,11 @@ function App() {
           </div>
           <Flex gap="2" align="center" wrap="wrap">
             <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}</Badge>
+            {project.revisionSource && (
+              <Tooltip content={`变更原因：${project.revisionSource.reason} · 恢复于 ${new Date(project.revisionSource.restoredAt).toLocaleString('zh-CN')}`}>
+                <Badge color="blue" variant="soft" size="2">基于 r{project.revisionSource.revision} 恢复</Badge>
+              </Tooltip>
+            )}
             <Text size="1" color="gray">{errors ? `${errors} 个阻断` : '无阻断问题'} · {warnings} 个警告</Text>
             {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
             {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
@@ -418,6 +441,47 @@ function App() {
                   <span className="version-arrow">→</span>
                   <label><span>比较版本</span><Select.Root value={rightVersion} onValueChange={setRightVersion}><Select.Trigger variant="soft" /><Select.Content position="popper">{versionOptions.map((option) => <Select.Item key={option.id} value={option.id}>{option.label}</Select.Item>)}</Select.Content></Select.Root></label>
                 </div>
+                <Card className="restore-card">
+                  <div className="restore-card-head">
+                    <div>
+                      <Heading size="4">从冻结版本创建修订</Heading>
+                      <Text size="2" color="gray" as="p">以所选冻结快照为基础生成 r{project.revision + 1}，恢复当时的阶段、检查项、顺序和前置条件；当前草稿内容不会混入新修订。</Text>
+                    </div>
+                    {project.revisionSource && <Badge color="blue" variant="soft">当前 r{project.revision} 基于 r{project.revisionSource.revision} 恢复</Badge>}
+                  </div>
+                  {project.revisions.length ? (
+                    <>
+                      <div className="restore-controls">
+                        <label>
+                          <span>冻结版本</span>
+                          <Select.Root value={restoreId} onValueChange={setRestoreId}>
+                            <Select.Trigger variant="soft" aria-label="选择要恢复的冻结版本" />
+                            <Select.Content position="popper">
+                              {project.revisions.map((revision) => (
+                                <Select.Item key={revision.id} value={revision.id}>
+                                  r{revision.revision} · {new Date(revision.createdAt).toLocaleDateString('zh-CN')} · {revision.note}
+                                </Select.Item>
+                              ))}
+                            </Select.Content>
+                          </Select.Root>
+                        </label>
+                        <Button disabled={!restoreTarget || restoreBlocked} onClick={() => setRestoreOpen(true)}>从所选版本创建修订</Button>
+                      </div>
+                      {restoreBlocked && restoreTarget && (
+                        <Callout.Root color="red" size="1" mt="3">
+                          <Callout.Text>r{restoreTarget.revision} 之后已有更新的冻结版本，不能从旧快照分叉；请改用最新冻结版本 r{latestFrozenRevision}。</Callout.Text>
+                        </Callout.Root>
+                      )}
+                      {!restoreBlocked && project.status !== 'frozen' && (
+                        <Callout.Root color="amber" size="1" mt="3">
+                          <Callout.Text>当前 r{project.revision}（{statusMeta[project.status].label}）的未冻结内容将被快照完全替换，不会混入新修订。</Callout.Text>
+                        </Callout.Root>
+                      )}
+                    </>
+                  ) : (
+                    <Text size="2" color="gray">尚无冻结版本，完成一次复核冻结后才能从快照恢复。</Text>
+                  )}
+                </Card>
                 <div className="diff-list">
                   {diffEntries.length ? diffEntries.map((entry) => (
                     <Card key={`${entry.type}-${entry.key}`} className="diff-card">
@@ -463,6 +527,21 @@ function App() {
         </Dialog.Content>
       </Dialog.Root>
 
+      <Dialog.Root open={restoreOpen} onOpenChange={setRestoreOpen}>
+        <Dialog.Content maxWidth="520px">
+          <Dialog.Title>从 r{restoreTarget?.revision} 冻结版本创建修订 r{project.revision + 1}</Dialog.Title>
+          <Dialog.Description size="2" color="gray">
+            将恢复该快照的阶段、检查项、顺序和前置条件。
+            {project.status !== 'frozen' ? ` 当前 r${project.revision}（${statusMeta[project.status].label}）的未冻结内容将被完全替换，不会混入新修订。` : ' 当前草稿内容不会混入新修订。'}
+          </Dialog.Description>
+          <TextArea mt="4" value={restoreReason} onChange={(event) => setRestoreReason(event.target.value)} placeholder="变更原因（必填）：说明为什么从该冻结版本恢复" />
+          <Flex gap="3" justify="end" mt="4">
+            <Dialog.Close><Button variant="soft">取消</Button></Dialog.Close>
+            <Button color="blue" disabled={!restoreReason.trim()} onClick={confirmRestore}>确认创建修订</Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
       <Dialog.Root open={showHelp} onOpenChange={setShowHelp}>
         <Dialog.Content maxWidth="560px">
           <Dialog.Title>键盘快速操作</Dialog.Title>
@@ -486,7 +565,16 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
   const stages = project.stages.slice().sort((a, b) => a.order - b.order);
   return (
     <article className={`print-sheet ${compact ? 'compact' : ''}`}>
-      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge></header>
+      <header>
+        <div>
+          <Heading size="7">{project.name}</Heading>
+          <Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text>
+          {project.revisionSource && (
+            <Text size="1" color="blue" as="p">修订来源：基于冻结版本 r{project.revisionSource.revision} 恢复 · 变更原因：{project.revisionSource.reason}</Text>
+          )}
+        </div>
+        <Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge>
+      </header>
       {stages.map((stage, index) => (
         <section key={stage.id}>
           <div className="print-stage-title"><span>{String(index + 1).padStart(2, '0')}</span><div><Heading size="5">{stage.name}</Heading><Text color="gray" size="1">{stage.description}</Text></div></div>
